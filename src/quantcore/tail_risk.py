@@ -29,9 +29,6 @@ Risk thresholds are also returned as signed values.
 
 For example:
     -0.054 represents a 5.4% loss threshold.
-
-Reporting or presentation layers may convert these values into positive
-loss magnitudes if desired.
 """
 
 from collections.abc import Sequence
@@ -39,6 +36,12 @@ from collections.abc import Sequence
 import numpy as np
 import pandas as pd
 from scipy.stats import norm, t
+
+from quantcore._validation import (
+    clean_returns,
+    require_min_observations,
+    validate_confidence,
+)
 
 
 RiskInput = pd.Series | np.ndarray | Sequence[float]
@@ -52,91 +55,6 @@ __all__ = [
     "student_t_var",
     "student_t_expected_shortfall",
 ]
-
-
-def _clean_returns(returns: RiskInput) -> pd.Series:
-    """
-    Normalize and validate a return series.
-
-    Parameters
-    ----------
-    returns : RiskInput
-        One-dimensional collection of periodic returns.
-
-    Returns
-    -------
-    pd.Series
-        Clean floating-point return observations with missing and
-        non-finite values removed.
-
-    Raises
-    ------
-    ValueError
-        If no valid observations remain after cleaning.
-    """
-    cleaned = (
-        pd.Series(returns, dtype="float64")
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
-    )
-
-    if cleaned.empty:
-        raise ValueError(
-            "Return series contains no valid observations."
-        )
-
-    return cleaned
-
-
-def _validate_confidence(confidence: float) -> None:
-    """
-    Validate a confidence level.
-
-    Parameters
-    ----------
-    confidence : float
-        Confidence level expressed as a decimal between 0 and 1.
-
-    Raises
-    ------
-    ValueError
-        If confidence is not strictly between 0 and 1.
-    """
-    if not 0.0 < confidence < 1.0:
-        raise ValueError(
-            "Confidence must be strictly between 0 and 1."
-        )
-
-
-def _require_min_observations(
-    returns: pd.Series,
-    minimum: int,
-    model_name: str,
-) -> None:
-    """
-    Require a minimum number of observations for a model.
-
-    Parameters
-    ----------
-    returns : pd.Series
-        Clean return observations.
-
-    minimum : int
-        Minimum number of required observations.
-
-    model_name : str
-        Human-readable model name used in the error message.
-
-    Raises
-    ------
-    ValueError
-        If the return series contains too few observations.
-    """
-    if len(returns) < minimum:
-        raise ValueError(
-            f"{model_name} requires at least "
-            f"{minimum} valid observations."
-        )
 
 
 def historical_var(
@@ -166,13 +84,18 @@ def historical_var(
     -----
     A result of ``-0.054`` represents a 5.4% loss threshold.
 
-    Historical Simulation assumes that the observed return distribution
-    is informative about future downside risk.
+    Historical Simulation assumes the observed return distribution is
+    informative about future downside risk.
     """
-    cleaned = _clean_returns(returns)
-    _validate_confidence(confidence)
+    cleaned = clean_returns(returns)
 
-    percentile = (1.0 - confidence) * 100.0
+    confidence = validate_confidence(
+        confidence
+    )
+
+    percentile = (
+        1.0 - confidence
+    ) * 100.0
 
     return float(
         np.percentile(
@@ -190,7 +113,7 @@ def historical_expected_shortfall(
     Calculate Historical Expected Shortfall.
 
     Expected Shortfall measures the average return among observations
-    that fall at or below the Historical VaR threshold.
+    at or below the Historical VaR threshold.
 
     Parameters
     ----------
@@ -209,8 +132,11 @@ def historical_expected_shortfall(
     -----
     A result of ``-0.081`` represents an average tail loss of 8.1%.
     """
-    cleaned = _clean_returns(returns)
-    _validate_confidence(confidence)
+    cleaned = clean_returns(returns)
+
+    confidence = validate_confidence(
+        confidence
+    )
 
     var_threshold = historical_var(
         cleaned,
@@ -221,7 +147,9 @@ def historical_expected_shortfall(
         cleaned <= var_threshold
     ]
 
-    return float(tail_returns.mean())
+    return float(
+        tail_returns.mean()
+    )
 
 
 def gaussian_var(
@@ -233,7 +161,7 @@ def gaussian_var(
 
     The model assumes returns follow a normal distribution and estimates
     the downside threshold using the sample mean, sample volatility, and
-    the appropriate normal-distribution quantile.
+    the corresponding normal-distribution quantile.
 
     Parameters
     ----------
@@ -250,25 +178,32 @@ def gaussian_var(
 
     Notes
     -----
-    The model uses sample standard deviation with ``ddof=1``.
+    Sample standard deviation is calculated using ``ddof=1``.
     """
-    cleaned = _clean_returns(returns)
-    _validate_confidence(confidence)
+    cleaned = clean_returns(returns)
 
-    _require_min_observations(
-        cleaned,
-        minimum=2,
-        model_name="Gaussian VaR",
+    confidence = validate_confidence(
+        confidence
     )
 
-    mean_return = float(cleaned.mean())
+    require_min_observations(
+        cleaned,
+        minimum=2,
+        operation_name="Gaussian VaR",
+    )
+
+    mean_return = float(
+        cleaned.mean()
+    )
 
     volatility = float(
         cleaned.std(ddof=1)
     )
 
     z_score = float(
-        norm.ppf(1.0 - confidence)
+        norm.ppf(
+            1.0 - confidence
+        )
     )
 
     return float(
@@ -285,7 +220,7 @@ def gaussian_expected_shortfall(
     Calculate Gaussian Expected Shortfall.
 
     Gaussian Expected Shortfall estimates the expected return conditional
-    on being beyond the Gaussian VaR threshold.
+    on falling beyond the Gaussian VaR threshold.
 
     Parameters
     ----------
@@ -300,22 +235,29 @@ def gaussian_expected_shortfall(
     float
         Gaussian Expected Shortfall as a signed return.
     """
-    cleaned = _clean_returns(returns)
-    _validate_confidence(confidence)
+    cleaned = clean_returns(returns)
 
-    _require_min_observations(
-        cleaned,
-        minimum=2,
-        model_name="Gaussian Expected Shortfall",
+    confidence = validate_confidence(
+        confidence
     )
 
-    mean_return = float(cleaned.mean())
+    require_min_observations(
+        cleaned,
+        minimum=2,
+        operation_name="Gaussian Expected Shortfall",
+    )
+
+    mean_return = float(
+        cleaned.mean()
+    )
 
     volatility = float(
         cleaned.std(ddof=1)
     )
 
-    alpha = 1.0 - confidence
+    alpha = (
+        1.0 - confidence
+    )
 
     z_score = float(
         norm.ppf(alpha)
@@ -340,8 +282,8 @@ def student_t_var(
     """
     Calculate Student-t Parametric Value at Risk.
 
-    A Student-t distribution is fitted to the observed returns. The
-    resulting lower-tail quantile is used as the VaR threshold.
+    A Student-t distribution is fitted to the observed return series.
+    The resulting lower-tail quantile is used as the VaR threshold.
 
     Parameters
     ----------
@@ -358,20 +300,26 @@ def student_t_var(
 
     Notes
     -----
-    Student-t models can represent heavier tails than a Gaussian model,
-    making them useful when return distributions exhibit elevated tail
-    risk.
+    Student-t distributions can represent heavier tails than Gaussian
+    models and may better capture elevated tail risk.
     """
-    cleaned = _clean_returns(returns)
-    _validate_confidence(confidence)
+    cleaned = clean_returns(returns)
 
-    _require_min_observations(
-        cleaned,
-        minimum=3,
-        model_name="Student-t VaR",
+    confidence = validate_confidence(
+        confidence
     )
 
-    degrees_of_freedom, location, scale = t.fit(
+    require_min_observations(
+        cleaned,
+        minimum=3,
+        operation_name="Student-t VaR",
+    )
+
+    (
+        degrees_of_freedom,
+        location,
+        scale,
+    ) = t.fit(
         cleaned.to_numpy()
     )
 
@@ -415,34 +363,39 @@ def student_t_expected_shortfall(
     Raises
     ------
     ValueError
-        If the fitted Student-t distribution has one or fewer degrees of
-        freedom, because its expected value is not finite.
-
-    Notes
-    -----
-    Student-t Expected Shortfall explicitly models heavier-tail behavior
-    than Gaussian Expected Shortfall.
+        If the fitted Student-t distribution has one or fewer degrees
+        of freedom, because its expected value is not finite.
     """
-    cleaned = _clean_returns(returns)
-    _validate_confidence(confidence)
+    cleaned = clean_returns(returns)
 
-    _require_min_observations(
-        cleaned,
-        minimum=3,
-        model_name="Student-t Expected Shortfall",
+    confidence = validate_confidence(
+        confidence
     )
 
-    degrees_of_freedom, location, scale = t.fit(
+    require_min_observations(
+        cleaned,
+        minimum=3,
+        operation_name="Student-t Expected Shortfall",
+    )
+
+    (
+        degrees_of_freedom,
+        location,
+        scale,
+    ) = t.fit(
         cleaned.to_numpy()
     )
 
     if degrees_of_freedom <= 1.0:
         raise ValueError(
-            "Student-t Expected Shortfall is undefined when the "
-            "fitted degrees of freedom are less than or equal to 1."
+            "Student-t Expected Shortfall is undefined when "
+            "the fitted degrees of freedom are less than or "
+            "equal to 1."
         )
 
-    alpha = 1.0 - confidence
+    alpha = (
+        1.0 - confidence
+    )
 
     lower_tail_quantile = float(
         t.ppf(
@@ -477,4 +430,6 @@ def student_t_expected_shortfall(
         )
     )
 
-    return float(expected_tail)
+    return float(
+        expected_tail
+    )
