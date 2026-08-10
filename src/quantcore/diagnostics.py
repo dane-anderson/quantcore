@@ -26,6 +26,12 @@ import numpy as np
 import pandas as pd
 from scipy.stats import jarque_bera, kurtosis, skew
 
+from quantcore._validation import (
+    clean_returns,
+    require_min_observations,
+    validate_positive_integer,
+    validate_significance_level,
+)
 from quantcore.risk import volatility
 
 
@@ -89,57 +95,6 @@ class DistributionDiagnostics:
     normality_rejected: bool
 
 
-def _clean_returns(
-    returns: ReturnInput,
-) -> pd.Series:
-    """
-    Normalize and validate return observations.
-
-    Parameters
-    ----------
-    returns : ReturnInput
-        One-dimensional collection of periodic returns.
-
-    Returns
-    -------
-    pd.Series
-        Floating-point return observations with missing and non-finite
-        values removed.
-
-    Raises
-    ------
-    ValueError
-        If no valid observations remain after cleaning.
-    """
-    cleaned = (
-        pd.Series(returns, dtype="float64")
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
-    )
-
-    if cleaned.empty:
-        raise ValueError(
-            "Return series contains no valid observations."
-        )
-
-    return cleaned
-
-
-def _require_min_observations(
-    returns: pd.Series,
-    minimum: int,
-    diagnostic_name: str,
-) -> None:
-    """
-    Require a minimum sample size for a statistical diagnostic.
-    """
-    if len(returns) < minimum:
-        raise ValueError(
-            f"{diagnostic_name} requires at least "
-            f"{minimum} valid observations."
-        )
-
-
 def mean_return(
     returns: ReturnInput,
 ) -> float:
@@ -156,9 +111,13 @@ def mean_return(
     float
         Arithmetic mean return.
     """
-    cleaned = _clean_returns(returns)
+    cleaned = clean_returns(
+        returns
+    )
 
-    return float(cleaned.mean())
+    return float(
+        cleaned.mean()
+    )
 
 
 def skewness(
@@ -167,10 +126,10 @@ def skewness(
     """
     Calculate bias-corrected sample skewness.
 
-    Skewness measures asymmetry in the return distribution.
+    Skewness measures asymmetry in a return distribution.
 
-    Negative values indicate a longer or heavier left tail, while
-    positive values indicate a longer or heavier right tail.
+    Negative values indicate greater left-tail asymmetry, while positive
+    values indicate greater right-tail asymmetry.
 
     Parameters
     ----------
@@ -181,13 +140,20 @@ def skewness(
     -------
     float
         Bias-corrected sample skewness.
-    """
-    cleaned = _clean_returns(returns)
 
-    _require_min_observations(
+    Raises
+    ------
+    ValueError
+        If fewer than three valid observations are available.
+    """
+    cleaned = clean_returns(
+        returns
+    )
+
+    require_min_observations(
         cleaned,
         minimum=3,
-        diagnostic_name="Skewness",
+        operation_name="Skewness",
     )
 
     return float(
@@ -218,13 +184,20 @@ def excess_kurtosis(
     -------
     float
         Bias-corrected excess kurtosis.
-    """
-    cleaned = _clean_returns(returns)
 
-    _require_min_observations(
+    Raises
+    ------
+    ValueError
+        If fewer than four valid observations are available.
+    """
+    cleaned = clean_returns(
+        returns
+    )
+
+    require_min_observations(
         cleaned,
         minimum=4,
-        diagnostic_name="Excess kurtosis",
+        operation_name="Excess kurtosis",
     )
 
     return float(
@@ -254,13 +227,20 @@ def normality_test(
     -------
     tuple[float, float]
         Jarque-Bera test statistic and p-value.
-    """
-    cleaned = _clean_returns(returns)
 
-    _require_min_observations(
+    Raises
+    ------
+    ValueError
+        If fewer than two valid observations are available.
+    """
+    cleaned = clean_returns(
+        returns
+    )
+
+    require_min_observations(
         cleaned,
         minimum=2,
-        diagnostic_name="Jarque-Bera normality test",
+        operation_name="Jarque-Bera normality test",
     )
 
     result = jarque_bera(
@@ -291,7 +271,7 @@ def distribution_summary(
         Use 252 for daily trading data.
 
     significance_level : float, default=0.05
-        Significance threshold used when evaluating the Jarque-Bera
+        Significance threshold used to evaluate the Jarque-Bera
         normality test.
 
     Returns
@@ -302,27 +282,31 @@ def distribution_summary(
     Raises
     ------
     ValueError
-        If periods_per_year is not positive, significance_level is
-        outside the interval (0, 1), or too few observations are
-        available for the complete diagnostic summary.
+        If too few observations are available or configuration
+        parameters are invalid.
     """
-    cleaned = _clean_returns(returns)
-
-    _require_min_observations(
-        cleaned,
-        minimum=4,
-        diagnostic_name="Distribution summary",
+    cleaned = clean_returns(
+        returns
     )
 
-    if periods_per_year <= 0:
-        raise ValueError(
-            "periods_per_year must be greater than zero."
-        )
+    require_min_observations(
+        cleaned,
+        minimum=4,
+        operation_name="Distribution summary",
+    )
 
-    if not 0.0 < significance_level < 1.0:
-        raise ValueError(
-            "significance_level must be strictly between 0 and 1."
+    periods_per_year = (
+        validate_positive_integer(
+            periods_per_year,
+            "periods_per_year",
         )
+    )
+
+    significance_level = (
+        validate_significance_level(
+            significance_level
+        )
+    )
 
     statistic, pvalue = normality_test(
         cleaned
@@ -340,12 +324,18 @@ def distribution_summary(
 
     return DistributionDiagnostics(
         observations=len(cleaned),
-        mean_return=mean_return(cleaned),
-        volatility=float(periodic_volatility),
+        mean_return=mean_return(
+            cleaned
+        ),
+        volatility=float(
+            periodic_volatility
+        ),
         annualized_volatility=float(
             annualized_volatility
         ),
-        skewness=skewness(cleaned),
+        skewness=skewness(
+            cleaned
+        ),
         excess_kurtosis=excess_kurtosis(
             cleaned
         ),
