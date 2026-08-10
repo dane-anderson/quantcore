@@ -4,8 +4,8 @@ Tail-risk model comparison tools for QuantCore.
 This module provides a standardized interface for running multiple
 tail-risk models against the same return series.
 
-The comparison layer does not reinterpret or modify model outputs.
-Each model remains responsible for its own quantitative calculation.
+The comparison layer coordinates model execution only. Individual
+models remain responsible for their quantitative calculations.
 """
 
 from collections.abc import Sequence
@@ -15,6 +15,10 @@ from typing import Callable
 import numpy as np
 import pandas as pd
 
+from quantcore._validation import (
+    clean_returns,
+    validate_confidence,
+)
 from quantcore.tail_risk import (
     gaussian_expected_shortfall,
     gaussian_var,
@@ -96,36 +100,18 @@ __all__ = [
 ]
 
 
-def _clean_returns(
-    returns: ReturnInput,
-) -> pd.Series:
-    """
-    Normalize return observations for model comparison.
-    """
-    cleaned = (
-        pd.Series(returns, dtype="float64")
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
-    )
-
-    if cleaned.empty:
-        raise ValueError(
-            "Return series contains no valid observations."
-        )
-
-    return cleaned
-
-
 def available_models() -> tuple[str, ...]:
     """
-    Return the registered tail-risk model keys.
+    Return registered tail-risk model identifiers.
 
     Returns
     -------
     tuple[str, ...]
-        Available model identifiers.
+        Available model keys in registry order.
     """
-    return tuple(MODEL_REGISTRY.keys())
+    return tuple(
+        MODEL_REGISTRY.keys()
+    )
 
 
 def run_tail_risk_analysis(
@@ -134,7 +120,7 @@ def run_tail_risk_analysis(
     models: Sequence[str] | None = None,
 ) -> list[RiskModelResult]:
     """
-    Run selected tail-risk models on the same return series.
+    Run selected tail-risk models against the same return series.
 
     Parameters
     ----------
@@ -142,12 +128,12 @@ def run_tail_risk_analysis(
         Historical periodic returns.
 
     confidence : float, default=0.95
-        Confidence level supplied to each model.
+        Confidence level supplied to each selected model.
 
     models : Sequence[str] or None, default=None
-        Model keys to execute.
+        Model identifiers to execute.
 
-        Available values are:
+        Available models are:
 
         - ``"historical"``
         - ``"gaussian"``
@@ -158,22 +144,30 @@ def run_tail_risk_analysis(
     Returns
     -------
     list[RiskModelResult]
-        Standardized results for each selected model.
+        Standardized results in requested model order.
 
     Raises
     ------
     ValueError
-        If the return series contains no valid observations,
-        no models are selected, or an unknown model key is supplied.
+        If return data is invalid, confidence is invalid, no models
+        are selected, or an unknown model identifier is supplied.
     """
-    cleaned = _clean_returns(returns)
+    cleaned = clean_returns(
+        returns
+    )
+
+    confidence = validate_confidence(
+        confidence
+    )
 
     if models is None:
         selected_models = list(
             MODEL_REGISTRY.keys()
         )
     else:
-        selected_models = list(models)
+        selected_models = list(
+            models
+        )
 
     if not selected_models:
         raise ValueError(
@@ -187,12 +181,12 @@ def run_tail_risk_analysis(
     ]
 
     if unknown_models:
-        available = ", ".join(
-            MODEL_REGISTRY.keys()
-        )
-
         unknown = ", ".join(
             unknown_models
+        )
+
+        available = ", ".join(
+            MODEL_REGISTRY.keys()
         )
 
         raise ValueError(
@@ -200,14 +194,18 @@ def run_tail_risk_analysis(
             f"Available models: {available}."
         )
 
-    results: list[RiskModelResult] = []
+    results: list[
+        RiskModelResult
+    ] = []
 
     for model_key in selected_models:
         (
             model_name,
             var_function,
             expected_shortfall_function,
-        ) = MODEL_REGISTRY[model_key]
+        ) = MODEL_REGISTRY[
+            model_key
+        ]
 
         value_at_risk = var_function(
             cleaned,
@@ -232,7 +230,9 @@ def run_tail_risk_analysis(
                 expected_shortfall=float(
                     expected_shortfall
                 ),
-                observations=len(cleaned),
+                observations=len(
+                    cleaned
+                ),
             )
         )
 
