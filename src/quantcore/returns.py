@@ -1,466 +1,365 @@
-"""Unit tests for QuantCore return transformations."""
+"""
+Return transformations for QuantCore.
+
+This module provides deterministic utilities for converting price series
+into returns and for compounding periodic returns into cumulative growth
+or wealth-index series.
+
+The functions preserve pandas indexes and Series names when possible and
+apply explicit validation to avoid silent data-cleaning behavior.
+"""
+
+from collections.abc import Sequence
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from quantcore.returns import (
-    cumulative_returns,
-    log_returns,
-    simple_returns,
-    wealth_index,
+from quantcore._validation import (
+    validate_positive_finite_number,
+    validate_positive_integer,
 )
 
 
-# ---------------------------------------------------------------------------
-# Simple Returns
-# ---------------------------------------------------------------------------
+PriceInput = pd.Series | np.ndarray | Sequence[float]
+ReturnInput = pd.Series | np.ndarray | Sequence[float]
 
 
-def test_simple_returns_calculates_expected_values():
-    prices = pd.Series(
-        [100.0, 105.0, 102.0]
-    )
-
-    result = simple_returns(
-        prices
-    )
-
-    expected = pd.Series(
-        [
-            0.05,
-            (102.0 / 105.0) - 1.0,
-        ],
-        index=[1, 2],
-    )
-
-    pd.testing.assert_series_equal(
-        result,
-        expected,
-    )
+__all__ = [
+    "simple_returns",
+    "log_returns",
+    "cumulative_returns",
+    "wealth_index",
+]
 
 
-def test_simple_returns_supports_multi_period_changes():
-    prices = pd.Series(
-        [100.0, 105.0, 110.0, 121.0]
-    )
+def _coerce_series(
+    values: pd.Series | np.ndarray | Sequence[float],
+    *,
+    name: str,
+) -> pd.Series:
+    """
+    Convert one-dimensional numeric input to a float64 pandas Series.
 
-    result = simple_returns(
+    Existing pandas indexes and Series names are preserved.
+    """
+    if isinstance(values, pd.Series):
+        series = values.copy()
+    else:
+        array = np.asarray(values)
+
+        if array.ndim != 1:
+            raise ValueError(
+                f"{name} must be one-dimensional."
+            )
+
+        series = pd.Series(array)
+
+    if series.ndim != 1:
+        raise ValueError(
+            f"{name} must be one-dimensional."
+        )
+
+    try:
+        return series.astype("float64")
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{name} must contain numeric values."
+        ) from exc
+
+
+def _prepare_prices(
+    prices: PriceInput,
+) -> pd.Series:
+    """
+    Validate and prepare a financial price series.
+
+    Missing prices are permitted because callers may choose whether to
+    preserve or remove missing return observations. Infinite and
+    non-positive prices are rejected.
+    """
+    series = _coerce_series(
         prices,
-        periods=2,
+        name="Prices",
     )
 
-    expected = pd.Series(
-        [
-            0.10,
-            (121.0 / 105.0) - 1.0,
-        ],
-        index=[2, 3],
+    values = series.to_numpy(
+        dtype="float64",
+        copy=False,
     )
 
-    pd.testing.assert_series_equal(
-        result,
-        expected,
-    )
+    if np.isinf(values).any():
+        raise ValueError(
+            "Prices cannot contain infinite values."
+        )
+
+    finite_prices = series.dropna()
+
+    if finite_prices.empty:
+        raise ValueError(
+            "No valid price observations are available."
+        )
+
+    if (finite_prices <= 0).any():
+        raise ValueError(
+            "Prices must be strictly positive."
+        )
+
+    return series
 
 
-def test_simple_returns_preserves_series_name():
-    prices = pd.Series(
-        [100.0, 105.0, 110.0],
-        name="AAPL",
-    )
+def _prepare_returns(
+    returns: ReturnInput,
+) -> pd.Series:
+    """
+    Validate and prepare a periodic return series.
 
-    result = simple_returns(
-        prices
-    )
-
-    assert result.name == "AAPL"
-
-
-def test_simple_returns_does_not_bridge_missing_prices():
-    prices = pd.Series(
-        [
-            100.0,
-            np.nan,
-            110.0,
-            121.0,
-        ]
-    )
-
-    result = simple_returns(
-        prices,
-        dropna=False,
-    )
-
-    assert np.isnan(
-        result.iloc[1]
-    )
-
-    assert np.isnan(
-        result.iloc[2]
-    )
-
-    assert result.iloc[3] == pytest.approx(
-        0.10
-    )
-
-
-# ---------------------------------------------------------------------------
-# Log Returns
-# ---------------------------------------------------------------------------
-
-
-def test_log_returns_calculates_expected_values():
-    prices = pd.Series(
-        [100.0, 110.0, 121.0]
-    )
-
-    result = log_returns(
-        prices
-    )
-
-    expected_value = np.log(
-        1.10
-    )
-
-    assert result.iloc[0] == pytest.approx(
-        expected_value
-    )
-
-    assert result.iloc[1] == pytest.approx(
-        expected_value
-    )
-
-
-def test_log_returns_are_additive_across_periods():
-    prices = pd.Series(
-        [100.0, 110.0, 121.0]
-    )
-
-    one_period = log_returns(
-        prices
-    )
-
-    two_period = log_returns(
-        prices,
-        periods=2,
-    )
-
-    assert two_period.iloc[0] == pytest.approx(
-        one_period.sum()
-    )
-
-
-# ---------------------------------------------------------------------------
-# Cumulative Returns
-# ---------------------------------------------------------------------------
-
-
-def test_cumulative_returns_compounds_periodic_returns():
-    returns = pd.Series(
-        [0.10, 0.10]
-    )
-
-    result = cumulative_returns(
-        returns
-    )
-
-    expected = pd.Series(
-        [0.10, 0.21]
-    )
-
-    pd.testing.assert_series_equal(
-        result,
-        expected,
-    )
-
-
-def test_cumulative_returns_supports_total_loss():
-    returns = pd.Series(
-        [0.10, -1.00, 0.50]
-    )
-
-    result = cumulative_returns(
-        returns
-    )
-
-    assert result.iloc[1] == pytest.approx(
-        -1.0
-    )
-
-    assert result.iloc[2] == pytest.approx(
-        -1.0
-    )
-
-
-# ---------------------------------------------------------------------------
-# Wealth Index
-# ---------------------------------------------------------------------------
-
-
-def test_wealth_index_compounds_from_initial_value():
-    returns = pd.Series(
-        [0.10, -0.05]
-    )
-
-    result = wealth_index(
+    Missing observations are permitted. Infinite returns and returns below
+    -100% are rejected because they cannot represent valid simple returns.
+    A return of exactly -100% is allowed.
+    """
+    series = _coerce_series(
         returns,
-        initial_value=100.0,
+        name="Returns",
     )
 
-    expected = pd.Series(
-        [110.0, 104.5]
+    values = series.to_numpy(
+        dtype="float64",
+        copy=False,
     )
 
-    pd.testing.assert_series_equal(
+    if np.isinf(values).any():
+        raise ValueError(
+            "Returns cannot contain infinite values."
+        )
+
+    finite_returns = series.dropna()
+
+    if finite_returns.empty:
+        raise ValueError(
+            "No valid return observations are available."
+        )
+
+    if (finite_returns < -1.0).any():
+        raise ValueError(
+            "Returns cannot be below -100%."
+        )
+
+    return series
+
+
+def _finalize_series(
+    values: pd.Series,
+    *,
+    dropna: bool,
+    operation_name: str,
+) -> pd.Series:
+    """
+    Apply missing-value handling and verify a usable result exists.
+    """
+    result = (
+        values.dropna()
+        if dropna
+        else values
+    )
+
+    if values.notna().sum() == 0:
+        raise ValueError(
+            f"No valid observations were produced by {operation_name}."
+        )
+
+    return result.astype("float64")
+
+
+def simple_returns(
+    prices: PriceInput,
+    periods: int = 1,
+    dropna: bool = True,
+) -> pd.Series:
+    """
+    Calculate simple percentage returns from a price series.
+
+    Parameters
+    ----------
+    prices:
+        One-dimensional sequence of strictly positive prices.
+    periods:
+        Number of observations between the current and comparison price.
+    dropna:
+        If True, remove missing return observations from the result.
+
+    Returns
+    -------
+    pandas.Series
+        Simple returns expressed as decimals.
+
+    Notes
+    -----
+    Missing prices are not forward-filled. A missing price therefore
+    prevents a return from being calculated across that observation.
+    """
+    periods = validate_positive_integer(
+        periods,
+        "periods",
+    )
+
+    price_series = _prepare_prices(
+        prices
+    )
+
+    shifted = price_series.shift(
+        periods
+    )
+
+    result = (
+        price_series / shifted
+    ) - 1.0
+
+    return _finalize_series(
         result,
-        expected,
+        dropna=dropna,
+        operation_name="simple return calculation",
     )
 
 
-def test_wealth_index_preserves_series_index():
-    index = pd.date_range(
-        "2026-01-01",
-        periods=3,
-        freq="D",
+def log_returns(
+    prices: PriceInput,
+    periods: int = 1,
+    dropna: bool = True,
+) -> pd.Series:
+    """
+    Calculate logarithmic returns from a price series.
+
+    Parameters
+    ----------
+    prices:
+        One-dimensional sequence of strictly positive prices.
+    periods:
+        Number of observations between the current and comparison price.
+    dropna:
+        If True, remove missing return observations from the result.
+
+    Returns
+    -------
+    pandas.Series
+        Log returns expressed as decimals.
+
+    Notes
+    -----
+    Log returns are calculated explicitly as:
+
+        log(current_price / previous_price)
+
+    Missing prices are not forward-filled.
+    """
+    periods = validate_positive_integer(
+        periods,
+        "periods",
     )
 
-    returns = pd.Series(
-        [0.01, -0.02, 0.03],
-        index=index,
+    price_series = _prepare_prices(
+        prices
     )
 
-    result = wealth_index(
+    shifted = price_series.shift(
+        periods
+    )
+
+    result = np.log(
+        price_series / shifted
+    )
+
+    return _finalize_series(
+        result,
+        dropna=dropna,
+        operation_name="log return calculation",
+    )
+
+
+def cumulative_returns(
+    returns: ReturnInput,
+    dropna: bool = True,
+) -> pd.Series:
+    """
+    Compound periodic simple returns into cumulative returns.
+
+    Parameters
+    ----------
+    returns:
+        One-dimensional sequence of periodic simple returns.
+    dropna:
+        If True, remove missing observations before compounding.
+
+    Returns
+    -------
+    pandas.Series
+        Cumulative return after each observation.
+
+    Examples
+    --------
+    Returns of 10% followed by 10% produce cumulative growth of:
+
+        10%
+        21%
+    """
+    return_series = _prepare_returns(
         returns
     )
 
-    assert result.index.equals(
-        index
+    if dropna:
+        return_series = return_series.dropna()
+
+    result = (
+        1.0 + return_series
+    ).cumprod() - 1.0
+
+    return _finalize_series(
+        result,
+        dropna=dropna,
+        operation_name="cumulative return calculation",
     )
 
 
-# ---------------------------------------------------------------------------
-# Missing Data
-# ---------------------------------------------------------------------------
+def wealth_index(
+    returns: ReturnInput,
+    initial_value: float = 1.0,
+    dropna: bool = True,
+) -> pd.Series:
+    """
+    Compound periodic simple returns into a wealth-index series.
 
+    Parameters
+    ----------
+    returns:
+        One-dimensional sequence of periodic simple returns.
+    initial_value:
+        Starting portfolio or index value.
+    dropna:
+        If True, remove missing observations before compounding.
 
-def test_cumulative_returns_can_preserve_missing_observations():
-    returns = pd.Series(
-        [
-            0.10,
-            np.nan,
-            0.05,
-        ]
+    Returns
+    -------
+    pandas.Series
+        Wealth value after each periodic return.
+    """
+    initial_value = validate_positive_finite_number(
+        initial_value,
+        "initial_value",
     )
 
-    result = cumulative_returns(
-        returns,
-        dropna=False,
+    return_series = _prepare_returns(
+        returns
     )
 
-    assert result.iloc[0] == pytest.approx(
-        0.10
+    if dropna:
+        return_series = return_series.dropna()
+
+    result = (
+        initial_value
+        * (1.0 + return_series).cumprod()
     )
 
-    assert np.isnan(
-        result.iloc[1]
+    return _finalize_series(
+        result,
+        dropna=dropna,
+        operation_name="wealth index calculation",
     )
-
-    assert result.iloc[2] == pytest.approx(
-        0.155
-    )
-
-
-# ---------------------------------------------------------------------------
-# Price Validation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "prices",
-    [
-        [100.0, 0.0, 110.0],
-        [100.0, -50.0, 110.0],
-    ],
-)
-def test_price_return_functions_reject_non_positive_prices(
-    prices,
-):
-    with pytest.raises(
-        ValueError,
-        match="strictly positive",
-    ):
-        simple_returns(
-            prices
-        )
-
-
-@pytest.mark.parametrize(
-    "function",
-    [
-        simple_returns,
-        log_returns,
-    ],
-)
-def test_price_return_functions_reject_infinite_prices(
-    function,
-):
-    with pytest.raises(
-        ValueError,
-        match="infinite",
-    ):
-        function(
-            [
-                100.0,
-                np.inf,
-                110.0,
-            ]
-        )
-
-
-@pytest.mark.parametrize(
-    "function",
-    [
-        simple_returns,
-        log_returns,
-    ],
-)
-def test_price_return_functions_reject_multidimensional_input(
-    function,
-):
-    with pytest.raises(
-        ValueError,
-        match="one-dimensional",
-    ):
-        function(
-            [
-                [100.0, 101.0],
-                [102.0, 103.0],
-            ]
-        )
-
-
-@pytest.mark.parametrize(
-    "function",
-    [
-        simple_returns,
-        log_returns,
-    ],
-)
-def test_price_return_functions_require_calculable_return(
-    function,
-):
-    with pytest.raises(
-        ValueError,
-        match="No valid",
-    ):
-        function(
-            [100.0]
-        )
-
-
-# ---------------------------------------------------------------------------
-# Return Validation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "function",
-    [
-        cumulative_returns,
-        wealth_index,
-    ],
-)
-def test_compounding_functions_reject_returns_below_negative_one(
-    function,
-):
-    with pytest.raises(
-        ValueError,
-        match="-100%",
-    ):
-        function(
-            [
-                0.05,
-                -1.01,
-                0.02,
-            ]
-        )
-
-
-@pytest.mark.parametrize(
-    "function",
-    [
-        cumulative_returns,
-        wealth_index,
-    ],
-)
-def test_compounding_functions_reject_infinite_returns(
-    function,
-):
-    with pytest.raises(
-        ValueError,
-        match="infinite",
-    ):
-        function(
-            [
-                0.01,
-                np.inf,
-                0.02,
-            ]
-        )
-
-
-# ---------------------------------------------------------------------------
-# Parameter Validation
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "periods",
-    [
-        0,
-        -1,
-        1.5,
-        np.nan,
-        np.inf,
-    ],
-)
-def test_return_period_validation_rejects_invalid_values(
-    periods,
-):
-    with pytest.raises(
-        ValueError,
-        match="periods",
-    ):
-        simple_returns(
-            [
-                100.0,
-                105.0,
-            ],
-            periods=periods,
-        )
-
-
-@pytest.mark.parametrize(
-    "initial_value",
-    [
-        0,
-        -100,
-        np.nan,
-        np.inf,
-    ],
-)
-def test_wealth_index_rejects_invalid_initial_value(
-    initial_value,
-):
-    with pytest.raises(
-        ValueError,
-        match="initial_value",
-    ):
-        wealth_index(
-            [
-                0.01,
-                0.02,
-            ],
-            initial_value=initial_value,
-        )
